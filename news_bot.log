@@ -1,0 +1,23 @@
+2025-10-12 04:00:52,996 - ERROR - Missing TELEGRAM_BOT_TOKEN. Set it in environment variables.
+2025-10-12 04:04:47,479 - ERROR - Missing TELEGRAM_BOT_TOKEN. Set it in environment variables.
+2025-10-12 04:06:32,762 - ERROR - Missing TELEGRAM_BOT_TOKEN. Set it in environment variables.
+2025-10-12 04:09:34,198 - INFO - Starting Telegram News Bot (Render-ready)
+2025-10-12 04:09:34,200 - INFO - Scheduled post at 07:00
+2025-10-12 04:09:34,201 - INFO - Scheduled post at 10:00
+2025-10-12 04:09:34,201 - INFO - Scheduled post at 12:30
+2025-10-12 04:09:34,202 - INFO - Scheduled post at 14:30
+2025-10-12 04:09:34,203 - INFO - Scheduled post at 17:00
+2025-10-12 04:09:34,203 - INFO - ======================================================================
+2025-10-12 04:09:34,205 - INFO - RUNNING SCHEDULED NEWS POST
+2025-10-12 04:09:34,205 - INFO - Time: 2025-10-12T04:09:34.205972
+2025-10-12 04:09:34,206 - INFO - ======================================================================
+2025-10-12 04:09:34,206 - INFO - Fetching links from https://www.myjoyonline.com/news/
+2025-10-12 04:09:35,707 - INFO - [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8080
+ * Running on http://192.168.43.31:8080
+2025-10-12 04:09:35,708 - INFO - [33mPress CTRL+C to quit[0m
+2025-10-12 04:09:37,428 - INFO - Found 30 articles on https://www.myjoyonline.com/news/
+2025-10-12 04:09:37,430 - INFO - Selected article: Nude beach etiquette: Lose your clothes, not your manners - https://www.myjoyonline.com/nude-beach-etiquette-lose-your-clothes-not-your-manners/
+2025-10-12 04:09:42,961 - INFO - Posted to Telegram successfully
+2025-10-12 04:09:42,964 - INFO - Post completed and saved.
