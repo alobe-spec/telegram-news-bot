@@ -45,7 +45,7 @@ def save_posted(article_id):
 
 def is_daytime():
     hour = datetime.now().hour
-    return 7 <= hour <= 17  # Between 7 AM and 5 PM
+    return True  # Between 7 AM and 5 PM
 
 # ------------------------------
 # 📰 Scrape MyJoyOnline
