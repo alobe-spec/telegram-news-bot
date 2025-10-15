@@ -132,66 +132,50 @@ def post_to_telegram(message, image_url=None):
 
 def job():
     logging.info("🔎 Starting scrape job...")
-    if not is_daytime():
-        logging.info("⏰ Outside working hours (7 AM–5 PM). Skipping scrape.")
-        return
 
-    try:
-        logging.info(f"Fetching articles from {BASE_URL}")
-        resp = requests.get(BASE_URL, headers=HEADERS, timeout=10)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
+    url = "https://www.myjoyonline.com/news/"
+    logging.info(f"Fetching articles from {url}")
 
-        # Log a snippet of HTML to verify structure
-        logging.info(soup.prettify()[:1000])
+    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    soup = BeautifulSoup(response.text, "html.parser")
 
-        # Select article blocks
-        article_blocks = soup.select("div.item-details")
-        logging.info(f"Found {len(article_blocks)} raw article blocks before filtering.")
+    # Select all article blocks based on new structure
+    articles = soup.select("div.col-lg-3.col-md-6.col-sm-6.col-xs-6.mb-4")
+    logging.info(f"Found {len(articles)} raw article blocks before filtering.")
 
-        if not article_blocks:
-            logging.warning("⚠️ No article blocks found. The page structure may have changed.")
-            return
+    new_posts = []
 
-        posted = load_posted()
-        new_posts_count = 0
+    for article in articles:
+        try:
+            # Extract link, title, and image
+            link_tag = article.select_one("a[href]")
+            title_tag = article.select_one("h4")
+            img_tag = article.select_one("img")
 
-        for post in article_blocks:
-            title_tag = post.select_one("h3 a")
-            if not title_tag:
+            if not link_tag or not title_tag:
                 continue
 
+            link = link_tag["href"]
             title = title_tag.get_text(strip=True)
-            url = title_tag["href"]
+            image = img_tag["src"] if img_tag else None
 
-            # Skip videos
-            if "video" in url.lower():
+            # Filter duplicates
+            if not title or link in posted_articles:
                 continue
 
-            # Get image (look for nearby <img>)
-            image_tag = post.find_previous_sibling("div")
-            image_url = None
-            if image_tag and image_tag.find("img"):
-                image_url = image_tag.find("img")["src"]
+            content = f"📰 *{title}*\n\nRead more: {link}"
+            if image:
+                send_telegram_post(content, image)
+            else:
+                send_telegram_post(content)
 
-            article_id = url.split("/")[-2] if "/" in url else url
-            if article_id in posted:
-                continue
+            posted_articles.add(link)
+            new_posts.append(title)
 
-            logging.info(f"📰 Found new article: {title}")
+        except Exception as e:
+            logging.warning(f"Error parsing article: {e}")
 
-            msg = rephrase_article(title, url)
-            if msg:
-                post_to_telegram(msg, image_url)
-                save_posted(article_id)
-                new_posts_count += 1
-                logging.info(f"✅ Posted: {title}")
-                time.sleep(random.randint(60, 180))  # pause between posts
-
-        logging.info(f"✅ job() completed successfully. Posted {new_posts_count} new articles.")
-
-    except Exception as e:
-        logging.error(f"❌ Error in job(): {e}")
+    logging.info(f"✅ job() completed successfully. Posted {len(new_posts)} new articles.")
 
 # ------------------------------
 # ⏱️ Scheduler Thread
