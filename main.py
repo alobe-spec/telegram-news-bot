@@ -28,7 +28,7 @@ app = Flask(__name__)
 BASE_URL = "https://www.myjoyonline.com/news/"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 POSTED_LOG = "posted_articles.txt"
-CHANNEL_LINK = "👉 Join @trending_gh"  # customize this
+CHANNEL_LINK = "👉 Join [@YourPersonalChannel](https://t.me/YourPersonalChannel) for more updates!"
 
 # ------------------------------
 # 🧾 Helpers
@@ -101,7 +101,7 @@ def rephrase_article(title, url):
         if res.status_code == 200:
             data = res.json()
             summary = data["choices"][0]["message"]["content"].strip()
-            return f"📰 *{title}*\n\n{summary}\n\n🔗 Read more: {url}\n\n{CHANNEL_LINK}"
+            return f"📰 *{title}*\n\n{summary}\n\n[Read more here]({url})\n\n{CHANNEL_LINK}"
         else:
             logging.error(f"Groq API error: {res.text}")
             return None
@@ -165,17 +165,20 @@ def start_scheduler():
         time.sleep(60)
 
 # ------------------------------
-# 🚀 Flask Webhook (Render/Railway)
+# 🚀 Flask Web Routes
 # ------------------------------
 @app.route("/")
 def home():
     return "✅ Telegram News Bot is running."
-    
+
 @app.route("/run_now", methods=["GET"])
 def run_now():
     job()
     return "✅ Manual scrape triggered successfully!"
-    
+
+# ------------------------------
+# 🏁 Entry Point
+# ------------------------------
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     Thread(target=start_scheduler).start()
