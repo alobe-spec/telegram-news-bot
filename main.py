@@ -28,7 +28,7 @@ app = Flask(__name__)
 BASE_URL = "https://www.myjoyonline.com/news/"
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 POSTED_LOG = "posted_articles.txt"
-CHANNEL_LINK = "👉 Join [@YourPersonalChannel](https://t.me/YourPersonalChannel) for more updates!"
+CHANNEL_LINK = "👉 Join [@trending_gh](https://t.me/trending_gh)"
 
 # ------------------------------
 # 🧾 Helpers
