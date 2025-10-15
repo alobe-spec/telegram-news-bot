@@ -170,7 +170,12 @@ def start_scheduler():
 @app.route("/")
 def home():
     return "✅ Telegram News Bot is running."
-
+    
+@app.route("/run_now", methods=["GET"])
+def run_now():
+    job()
+    return "✅ Manual scrape triggered successfully!"
+    
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     Thread(target=start_scheduler).start()
