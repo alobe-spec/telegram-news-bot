@@ -134,25 +134,77 @@ def post_to_telegram(message, image_url=None):
 # 🕒 Main Scheduler Job
 # ------------------------------
 def job():
-    if not is_daytime():
-        print("⏰ Outside working hours. Skipping...")
-        return
+    try:
+        logging.info("🟢 job() started running manually or by schedule!")
 
-    print("🔎 Checking for new articles...")
-    posted = load_posted()
-    articles = scrape_latest_articles()
+        url = "https://www.myjoyonline.com/news/"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        logging.info(f"Fetching articles from {url} ...")
 
-    for art in articles:
-        article_id = art["url"].split("/")[-2]
-        if article_id in posted:
-            continue
+        res = requests.get(url, headers=headers, timeout=10)
+        if res.status_code != 200:
+            logging.error(f"❌ Failed to fetch page, status code: {res.status_code}")
+            return
 
-        msg = rephrase_article(art["title"], art["url"])
-        if msg:
-            post_to_telegram(msg, art["image"])
-            save_posted(article_id)
-            print(f"✅ Posted: {art['title']}")
-            time.sleep(random.randint(60, 180))  # pause between posts
+        soup = BeautifulSoup(res.text, "html.parser")
+        articles = soup.select("article")  # Adjust selector if needed
+
+        logging.info(f"Found {len(articles)} articles total before filtering.")
+
+        posted_count = 0
+        for article in articles[:5]:  # limit for testing, remove [:5] later
+            title_el = article.select_one("h2, h3, a")
+            if not title_el:
+                continue
+
+            title = title_el.get_text(strip=True)
+            link = title_el.get("href")
+
+            # Skip if no valid link or is a video
+            if not link or "video" in link.lower():
+                logging.info(f"Skipping video or invalid link: {link}")
+                continue
+
+            # Make link absolute
+            if link.startswith("/"):
+                link = "https://www.myjoyonline.com" + link
+
+            # Get image if available
+            img_el = article.select_one("img")
+            image_url = img_el.get("src") if img_el else None
+
+            logging.info(f"📰 Processing article: {title}")
+            logging.info(f"Link: {link}")
+
+            # Fetch article content
+            try:
+                article_res = requests.get(link, headers=headers, timeout=10)
+                article_soup = BeautifulSoup(article_res.text, "html.parser")
+                paragraphs = article_soup.select("p")
+                content = " ".join([p.get_text(strip=True) for p in paragraphs])
+                content = content[:900]  # keep concise
+            except Exception as e:
+                logging.error(f"Failed to fetch article text: {e}")
+                continue
+
+            # Basic rephrase (you can replace this with GPT if you like)
+            summary = content.replace("Read more:", "").split("—")[0]
+            message = f"📰 *{title}*\n\n{summary}\n\n🔗 Read more: {link}\n\n📢 Follow @yourchannelhandle"
+
+            # Send to Telegram
+            try:
+                bot.send_message(chat_id="@yourchannelhandle", text=message, parse_mode="Markdown")
+                if image_url:
+                    bot.send_photo(chat_id="@yourchannelhandle", photo=image_url, caption=message)
+                posted_count += 1
+                logging.info(f"✅ Posted successfully: {title}")
+                time.sleep(2)
+            except Exception as e:
+                logging.error(f"❌ Failed to post to Telegram: {e}")
+
+        logging.info(f"✅ job() completed successfully. Posted {posted_count} new articles.")
+    except Exception as e:
+        logging.error(f"❌ job() crashed: {e}", exc_info=True)
 
 # ------------------------------
 # ⏱️ Scheduler Thread
