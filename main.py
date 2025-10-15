@@ -169,23 +169,29 @@ def start_scheduler():
 # ------------------------------
 @app.route("/")
 def home():
+    logging.info("Home route accessed.")
     return "✅ Telegram News Bot is running."
 
 @app.route("/run_now", methods=["GET"])
 def run_now():
-    # Run in background so Flask doesn't block
+    logging.info("Manual scrape triggered via /run_now.")
     Thread(target=job).start()
     return "🕒 Manual scrape triggered in background!"
 
 @app.route("/ping")
 def ping():
     return "pong"
-    
+
 
 # ------------------------------
 # 🏁 Entry Point
 # ------------------------------
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(message)s",
+    )
+    logging.info("Bot starting up... 🚀")
     Thread(target=start_scheduler).start()
+    logging.info("Scheduler thread started.")
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
