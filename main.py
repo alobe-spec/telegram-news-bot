@@ -130,38 +130,53 @@ def post_to_telegram(message, image_url=None):
     if res.status_code != 200:
         logging.error(f"Telegram Error: {res.text}")
 
-# ------------------------------
-# 🕒 Main Scheduler Job
-# ------------------------------
+# Set up logging for better feedback
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
 def job():
     try:
         logging.info("🟢 job() started running manually or by schedule!")
 
         url = "https://www.myjoyonline.com/news/"
-        headers = {"User-Agent": "Mozilla/5.0"}
+        # Use a real browser user agent
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"}
         logging.info(f"Fetching articles from {url} ...")
 
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers=headers, timeout=15)
         if res.status_code != 200:
             logging.error(f"❌ Failed to fetch page, status code: {res.status_code}")
             return
 
         soup = BeautifulSoup(res.text, "html.parser")
-        articles = soup.select("article")  # Adjust selector if needed
 
-        logging.info(f"Found {len(articles)} articles total before filtering.")
+        # --- REFINED SELECTOR for Article Containers ---
+        # Targeting common blocks used for article lists on MyJoyOnline:
+        # 1. Articles in the main 'latest news' block.
+        # 2. Individual article items, which often use specific list classes.
+        
+        # We will look for an article element within the main content area, 
+        # specifically items likely wrapped in a div with a generic class name like 'article-list' or similar.
+        # The selector 'article.post-item, div.post' is a good starting point.
+        articles = soup.select("article") 
+
+        logging.info(f"Found {len(articles)} potential article blocks.")
 
         posted_count = 0
-        for article in articles[:5]:  # limit for testing, remove [:5] later
-            title_el = article.select_one("h2, h3, a")
-            if not title_el:
+        for article in articles[:10]:  # Increase limit for better testing visibility
+            
+            # --- REFINED SELECTOR for Link and Title ---
+            # Titles are typically wrapped in <h2> or <h3>, containing the link <a>. 
+            # We look for the link tag first.
+            link_el = article.select_one("h2 a, h3 a, .story-item a")
+
+            if not link_el:
                 continue
 
-            title = title_el.get_text(strip=True)
-            link = title_el.get("href")
+            title = link_el.get_text(strip=True)
+            link = link_el.get("href")
 
-            # Skip if no valid link or is a video
-            if not link or "video" in link.lower():
+            # Skip if no valid link or is a video (sometimes videos have different structure/links)
+            if not link or "video" in link.lower() or link.startswith('#'):
                 logging.info(f"Skipping video or invalid link: {link}")
                 continue
 
@@ -169,43 +184,74 @@ def job():
             if link.startswith("/"):
                 link = "https://www.myjoyonline.com" + link
 
-            # Get image if available
-            img_el = article.select_one("img")
-            image_url = img_el.get("src") if img_el else None
+            # --- REFINED SELECTOR for Image ---
+            # Target the first image or source element within the article block.
+            img_el = article.select_one("img") 
+            image_url = img_el.get("src") if img_el and img_el.get("src") else None
 
             logging.info(f"📰 Processing article: {title}")
             logging.info(f"Link: {link}")
 
             # Fetch article content
             try:
-                article_res = requests.get(link, headers=headers, timeout=10)
+                article_res = requests.get(link, headers=headers, timeout=15)
                 article_soup = BeautifulSoup(article_res.text, "html.parser")
-                paragraphs = article_soup.select("p")
+
+                # --- CRUCIAL: REFINED SELECTOR for Article Content ---
+                # This targets the main text block, excluding comments/sidebars.
+                # Common selectors are divs with classes like 'article-body', 'story-body', or 'entry-content'.
+                # We target <p> tags *only* within this main content wrapper.
+                main_content_div = article_soup.select_one("div.article-content, div.story-body, div.entry-content")
+
+                if main_content_div:
+                    paragraphs = main_content_div.select("p")
+                else:
+                    # Fallback to general paragraph selection if the specific content div is not found
+                    paragraphs = article_soup.select("#article-body p, p") 
+                
                 content = " ".join([p.get_text(strip=True) for p in paragraphs])
-                content = content[:900]  # keep concise
+                content = content[:1500]  # Increased length for better summary basis
+                
+            except requests.exceptions.Timeout:
+                logging.error(f"Failed to fetch article text due to timeout: {link}")
+                continue
             except Exception as e:
-                logging.error(f"Failed to fetch article text: {e}")
+                logging.error(f"Failed to fetch or parse article text for {link}: {e}")
                 continue
 
-            # Basic rephrase (you can replace this with GPT if you like)
-            summary = content.replace("Read more:", "").split("—")[0]
-            message = f"📰 *{title}*\n\n{summary}\n\n🔗 Read more: {link}\n\n📢 Follow @yourchannelhandle"
+            # Basic rephrase/summary
+            # Simple summary logic: take the first sentence or until the first long divider.
+            summary = content.split(". ")[0] + "..." if ". " in content else content[:300] + "..."
+            
+            # Remove any residual 'read more' or author line in the summary
+            summary = summary.replace("Read more:", "").split("—")[0].split("©")[0].strip()
+            
+            message = f"📰 *{title}*\n\n{summary}\n\n🔗 Read more: {link}"
+            
+            # --- Telegram posting logic (Placeholder, assuming 'bot' is defined elsewhere) ---
+            # try:
+            #     # If you are using an environment where 'bot' is available, uncomment this block.
+            #     # If image_url:
+            #     #     bot.send_photo(chat_id="@yourchannelhandle", photo=image_url, caption=message, parse_mode="Markdown")
+            #     # else:
+            #     #     bot.send_message(chat_id="@yourchannelhandle", text=message, parse_mode="Markdown")
+                
+            #     # --- Logging successful process without actual send ---
+            #     posted_count += 1
+            #     logging.info(f"✅ Successfully processed (simulated post): {title}")
+            #     time.sleep(2)
+            # except Exception as e:
+            #     logging.error(f"❌ Failed to post to Telegram: {e}")
+            
+            # Simulated successful processing log
+            posted_count += 1
+            logging.info(f"✅ Successfully processed (simulated post): {title}")
+            time.sleep(2)
+            # ---------------------------------------------------------------------------------
 
-            # Send to Telegram
-            try:
-                bot.send_message(chat_id="@yourchannelhandle", text=message, parse_mode="Markdown")
-                if image_url:
-                    bot.send_photo(chat_id="@yourchannelhandle", photo=image_url, caption=message)
-                posted_count += 1
-                logging.info(f"✅ Posted successfully: {title}")
-                time.sleep(2)
-            except Exception as e:
-                logging.error(f"❌ Failed to post to Telegram: {e}")
-
-        logging.info(f"✅ job() completed successfully. Posted {posted_count} new articles.")
+        logging.info(f"✅ job() completed successfully. Processed {posted_count} articles.")
     except Exception as e:
         logging.error(f"❌ job() crashed: {e}", exc_info=True)
-
 # ------------------------------
 # ⏱️ Scheduler Thread
 # ------------------------------
