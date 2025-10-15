@@ -11,6 +11,26 @@ from dotenv import load_dotenv
 from flask import Flask
 import schedule
 
+import json, os
+
+POSTED_FILE = "posted_articles.json"
+
+# Load previously posted URLs to avoid duplicates
+if os.path.exists(POSTED_FILE):
+    with open(POSTED_FILE, "r", encoding="utf-8") as f:
+        try:
+            posted_articles = set(json.load(f))
+        except Exception:
+            posted_articles = set()
+else:
+    posted_articles = set()
+
+def save_posted_articles():
+    """Save posted articles to disk"""
+    with open(POSTED_FILE, "w", encoding="utf-8") as f:
+        json.dump(list(posted_articles), f)
+
+
 # ------------------------------
 # 🔧 Load environment variables
 # ------------------------------
@@ -136,18 +156,26 @@ def job():
     url = "https://www.myjoyonline.com/news/"
     logging.info(f"Fetching articles from {url}")
 
-    response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+    try:
+        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
+        response.raise_for_status()
+    except Exception as e:
+        logging.error(f"❌ Failed to fetch page: {e}")
+        return
+
     soup = BeautifulSoup(response.text, "html.parser")
 
-    # Select all article blocks based on new structure
-    articles = soup.select("div.col-lg-3.col-md-6.col-sm-6.col-xs-6.mb-4")
-    logging.info(f"Found {len(articles)} raw article blocks before filtering.")
+    # Top + grid sections
+    top_articles = soup.select("div.col-lg-6.col-md-6.col-sm-6.col-xs-12.mb-4")
+    grid_articles = soup.select("div.col-lg-3.col-md-6.col-sm-6.col-xs-6.mb-4")
+    all_articles = top_articles + grid_articles
+
+    logging.info(f"Found {len(all_articles)} raw article blocks before filtering.")
 
     new_posts = []
 
-    for article in articles:
+    for article in all_articles:
         try:
-            # Extract link, title, and image
             link_tag = article.select_one("a[href]")
             title_tag = article.select_one("h4")
             img_tag = article.select_one("img")
@@ -159,11 +187,14 @@ def job():
             title = title_tag.get_text(strip=True)
             image = img_tag["src"] if img_tag else None
 
-            # Filter duplicates
+            # ✅ Skip duplicates
             if not title or link in posted_articles:
                 continue
 
-            content = f"📰 *{title}*\n\nRead more: {link}"
+            # Clean content
+            content = f"📰 *{title}*\n\nRead more: {link}\n\n👉 @YourChannelHandle"
+
+            # ✅ Send with or without image
             if image:
                 send_telegram_post(content, image)
             else:
@@ -173,9 +204,12 @@ def job():
             new_posts.append(title)
 
         except Exception as e:
-            logging.warning(f"Error parsing article: {e}")
+            logging.warning(f"⚠️ Error parsing article: {e}")
 
+    # ✅ Save posted links
+    save_posted_articles()
     logging.info(f"✅ job() completed successfully. Posted {len(new_posts)} new articles.")
+
 
 # ------------------------------
 # ⏱️ Scheduler Thread
