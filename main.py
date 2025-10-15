@@ -173,8 +173,14 @@ def home():
 
 @app.route("/run_now", methods=["GET"])
 def run_now():
-    job()
-    return "✅ Manual scrape triggered successfully!"
+    # Run in background so Flask doesn't block
+    Thread(target=job).start()
+    return "🕒 Manual scrape triggered in background!"
+
+@app.route("/ping")
+def ping():
+    return "pong"
+    
 
 # ------------------------------
 # 🏁 Entry Point
