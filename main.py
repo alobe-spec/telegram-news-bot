@@ -28,9 +28,25 @@ HEADERS = {
 }
 POSTED_FILE = "posted_articles.json"
 KEEPALIVE_INTERVAL = 30  # Ping every 30 seconds to keep bot alive
-POST_INTERVAL = 3 * 60 * 60  # Post every 3 hours (in seconds)
+POSTING_START_HOUR = 7  # Start posting at 7 AM
+POSTING_END_HOUR = 17  # Stop posting at 5 PM (17:00 in 24-hour format)
+POSTS_PER_DAY = 5  # Number of posts per day
 CHANNEL_HANDLE = "@trending_gh"
 CHANNEL_LINK = f"👉 Join [{CHANNEL_HANDLE}](https://t.me/trending_gh)"
+
+# Calculate posting times (evenly distributed between 7 AM and 5 PM)
+# 7 AM to 5 PM = 10 hours = 600 minutes
+# 5 posts over 10 hours = every 2.5 hours (150 minutes)
+POSTING_TIMES = []
+start_minutes = POSTING_START_HOUR * 60  # 7 AM in minutes (420)
+end_minutes = POSTING_END_HOUR * 60  # 5 PM in minutes (1020)
+interval_minutes = (end_minutes - start_minutes) / (POSTS_PER_DAY - 1)  # Divide by 4 to get 5 posts
+
+for i in range(POSTS_PER_DAY):
+    post_time_minutes = start_minutes + (i * interval_minutes)
+    hour = int(post_time_minutes // 60)
+    minute = int(post_time_minutes % 60)
+    POSTING_TIMES.append((hour, minute))
 
 # Configure logging
 logging.basicConfig(
@@ -43,6 +59,10 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# Track daily posts
+daily_post_count = 0
+last_post_date = None
 
 # ------------------------------
 # 📁 Data Persistence
@@ -186,70 +206,110 @@ def create_post_content(title, url):
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         
-        # Extract article paragraphs
+        # Extract article paragraphs with better selectors
         paragraphs = []
-        for p in soup.select("article p, .entry-content p, .post-content p, .article-body p"):
-            text = p.get_text(strip=True)
-            if text and len(text) > 50:  # Filter out short/empty paragraphs
-                paragraphs.append(text)
+        
+        # Try multiple content selectors
+        content_selectors = [
+            "article p",
+            ".entry-content p",
+            ".post-content p",
+            ".article-body p",
+            ".story-body p",
+            "div.content p",
+            "p"
+        ]
+        
+        for selector in content_selectors:
+            found_paragraphs = soup.select(selector)
+            if found_paragraphs:
+                for p in found_paragraphs:
+                    text = p.get_text(strip=True)
+                    # Filter out short paragraphs, ads, and promotional content
+                    if (text and 
+                        len(text) > 80 and 
+                        not any(skip in text.lower() for skip in ['subscribe', 'newsletter', 'follow us', 'advertisement', 'read more', 'click here'])):
+                        paragraphs.append(text)
+                if len(paragraphs) >= 3:  # If we found good content, stop searching
+                    break
         
         if not paragraphs:
             logger.warning("⚠️ No content paragraphs found, using basic format")
             return f"📰 *{title}*\n\n{CHANNEL_LINK}"
         
-        # Limit content for AI processing
-        content = " ".join(paragraphs[:6])[:2000]  # First 6 paragraphs, max 2000 chars
+        # Get more content for better summary (first 8 paragraphs, max 3000 chars)
+        content = " ".join(paragraphs[:8])[:3000]
         
-        logger.info(f"📝 Extracted {len(paragraphs)} paragraphs ({len(content)} chars)")
+        logger.info(f"📝 Extracted {len(paragraphs)} paragraphs ({len(content)} chars) for AI")
         
-        # Call Groq API with specific instructions
-        prompt = f"""You are a professional Ghanaian news editor. Create a Telegram post for this article.
+        # Improved AI prompt with clear instructions
+        prompt = f"""You are writing a Telegram news post for a Ghanaian news channel. Your job is to make the news engaging and informative.
 
-TITLE: {title}
+ORIGINAL TITLE: {title}
 
 ARTICLE CONTENT:
 {content}
 
-REQUIREMENTS:
-1. First line: Rephrase the title to be engaging and clear (max 15 words)
-2. Next: Write EXACTLY 2 sentences summarizing the main points
-3. Be professional, clear, and informative
-4. Focus on the key facts
-5. Do not add emojis or extra commentary
+INSTRUCTIONS:
+1. Create a SHORT, CATCHY title (5-8 words max) that captures the essence of the story. Do NOT just copy the original title.
+2. Write EXACTLY 2 clear sentences that explain what happened, who is involved, and why it matters.
+3. Use simple, direct language that anyone can understand.
+4. Do NOT use hashtags, emojis, or promotional language.
+5. Focus on facts from the article.
 
-Format:
-[Rephrased Title]
+FORMAT YOUR RESPONSE EXACTLY LIKE THIS:
+[Your catchy title here]
 
-[Two sentence summary]"""
+[First sentence about the main point]. [Second sentence with important details].
+
+EXAMPLE:
+President Announces New Policy
+
+President Akufo-Addo unveiled a comprehensive education reform program aimed at making senior high school education more accessible. The initiative will provide free textbooks and digital learning tools to over 500,000 students across the country."""
         
         groq_url = "https://api.groq.com/openai/v1/chat/completions"
         payload = {
             "model": "mixtral-8x7b-32768",
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.6,
-            "max_tokens": 250
+            "temperature": 0.7,
+            "max_tokens": 300
         }
         headers_api = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
         
-        res = requests.post(groq_url, headers=headers_api, json=payload, timeout=20)
+        logger.info("📡 Sending request to Groq AI...")
+        res = requests.post(groq_url, headers=headers_api, json=payload, timeout=30)
         
         if res.status_code == 200:
             data = res.json()
             ai_content = data["choices"][0]["message"]["content"].strip()
-            logger.info(f"✅ AI content generated successfully")
+            logger.info(f"✅ AI content generated: {len(ai_content)} chars")
+            logger.info(f"📄 AI Response Preview: {ai_content[:100]}...")
+            
+            # Clean up the AI response
+            ai_content = ai_content.strip()
+            
+            # Remove any markdown formatting
+            ai_content = ai_content.replace('**', '')
+            ai_content = ai_content.replace('*', '')
             
             # Format the final message
-            message = f"📰 {ai_content}\n\n{CHANNEL_LINK}"
+            message = f"{ai_content}\n\n{CHANNEL_LINK}"
+            
+            logger.info(f"✅ Final message created successfully")
             return message
         else:
-            logger.error(f"❌ Groq API error ({res.status_code}): {res.text[:200]}")
+            logger.error(f"❌ Groq API error ({res.status_code}): {res.text[:300]}")
+            logger.warning("⚠️ Falling back to basic format")
             return f"📰 *{title}*\n\n{CHANNEL_LINK}"
             
+    except requests.exceptions.Timeout:
+        logger.error(f"❌ Timeout fetching article or calling AI")
+        return f"📰 *{title}*\n\n{CHANNEL_LINK}"
     except Exception as e:
-        logger.error(f"❌ Error creating AI content: {e}")
+        logger.error(f"❌ Error creating AI content: {type(e).__name__} - {str(e)}")
         return f"📰 *{title}*\n\n{CHANNEL_LINK}"
 
 # ------------------------------
@@ -295,15 +355,18 @@ def send_to_telegram(content, image_url=None):
         return False
 
 # ------------------------------
-# 🔄 Main Job - Post Latest Article Every 3 Hours
+# 🔄 Main Job - Post Latest Article at Scheduled Times
 # ------------------------------
 def post_latest_article():
     """Check and post latest article if it's new"""
+    global daily_post_count, last_post_date
+    
     logger.info("=" * 60)
     logger.info("🚀 CHECKING FOR LATEST ARTICLE TO POST")
     logger.info("=" * 60)
     logger.info(f"⏰ Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"📊 Already posted: {len(posted_articles)} articles")
+    logger.info(f"📅 Today's post count: {daily_post_count}/{POSTS_PER_DAY}")
     
     # Get the latest article from website
     latest_article = get_latest_article()
@@ -320,7 +383,7 @@ def post_latest_article():
         return
     
     logger.info(f"🆕 NEW ARTICLE TO POST!")
-    logger.info(f"📰 Title: {latest_article['title'][:80]}...")
+    logger.info(f"📰 Original Title: {latest_article['title'][:80]}...")
     logger.info(f"🔗 URL: {latest_article['url']}")
     logger.info(f"📸 Image: {'Yes ✅' if latest_article['image'] else 'No ❌'}")
     
@@ -328,14 +391,21 @@ def post_latest_article():
         # Create enhanced content
         message = create_post_content(latest_article['title'], latest_article['url'])
         
+        logger.info("=" * 60)
+        logger.info("📝 FINAL MESSAGE TO POST:")
+        logger.info(message)
+        logger.info("=" * 60)
+        
         # Send to Telegram
         success = send_to_telegram(message, latest_article['image'])
         
         if success:
             posted_articles.add(latest_article['url'])
             save_posted_articles(posted_articles)
+            daily_post_count += 1
             logger.info(f"✅ Article posted successfully!")
             logger.info(f"📊 Total articles posted: {len(posted_articles)}")
+            logger.info(f"📅 Today's posts: {daily_post_count}/{POSTS_PER_DAY}")
         else:
             logger.error(f"❌ Failed to post article")
             
@@ -345,46 +415,91 @@ def post_latest_article():
     logger.info("=" * 60)
 
 # ------------------------------
-# ⏱️ Keep Alive & Scheduler
+# ⏱️ Scheduler with Daily Posting Times
 # ------------------------------
+def is_posting_time():
+    """Check if current time matches any posting schedule"""
+    now = datetime.now()
+    current_hour = now.hour
+    current_minute = now.minute
+    
+    for post_hour, post_minute in POSTING_TIMES:
+        # Check if we're within 1 minute of a scheduled post time
+        if current_hour == post_hour and abs(current_minute - post_minute) <= 0:
+            return True
+    return False
+
+def get_next_post_time():
+    """Get the next scheduled posting time"""
+    now = datetime.now()
+    current_minutes = now.hour * 60 + now.minute
+    
+    for post_hour, post_minute in POSTING_TIMES:
+        post_minutes = post_hour * 60 + post_minute
+        if post_minutes > current_minutes:
+            return f"{post_hour:02d}:{post_minute:02d}"
+    
+    # If no more posts today, return first post time tomorrow
+    return f"{POSTING_TIMES[0][0]:02d}:{POSTING_TIMES[0][1]:02d} (tomorrow)"
+
 def run_keepalive_and_scheduler():
-    """Keep bot alive and run scheduled posts"""
+    """Keep bot alive and run scheduled posts at specific times"""
+    global daily_post_count, last_post_date
+    
     logger.info("=" * 60)
     logger.info("🚀 SCHEDULER STARTED")
     logger.info("=" * 60)
     logger.info(f"⏱️ Keep-alive ping: Every {KEEPALIVE_INTERVAL} seconds")
-    logger.info(f"📅 Post schedule: Every 3 hours")
+    logger.info(f"📅 Posting schedule: {POSTS_PER_DAY} times per day")
+    logger.info(f"🕐 Posting hours: {POSTING_START_HOUR}:00 AM - {POSTING_END_HOUR}:00 PM")
+    logger.info(f"📍 Posting times:")
+    for hour, minute in POSTING_TIMES:
+        logger.info(f"   • {hour:02d}:{minute:02d}")
     logger.info(f"📊 Already posted: {len(posted_articles)} articles")
     
-    # Run immediately on startup
-    logger.info("🔄 Running initial check...")
-    try:
-        post_latest_article()
-    except Exception as e:
-        logger.error(f"❌ Error in initial run: {e}")
+    # Initialize daily post count
+    last_post_date = datetime.now().date()
+    daily_post_count = 0
     
-    last_post_time = time.time()
     check_count = 0
+    last_check_time = None
     
     while True:
         try:
             check_count += 1
-            current_time = time.time()
-            time_since_last_post = current_time - last_post_time
-            time_until_next_post = POST_INTERVAL - time_since_last_post
+            now = datetime.now()
+            current_time = now.strftime('%H:%M:%S')
+            current_date = now.date()
+            current_hour = now.hour
+            current_minute = now.minute
             
-            # Log keep-alive ping
-            if check_count % 10 == 0:  # Log every 10th check (every 5 minutes)
-                hours_since_last = time_since_last_post / 3600
-                logger.info(f"💚 Keep-alive #{check_count} - {hours_since_last:.2f} hours since last post")
+            # Reset daily counter at midnight
+            if current_date != last_post_date:
+                logger.info(f"🌅 New day! Resetting daily post counter")
+                daily_post_count = 0
+                last_post_date = current_date
             
-            # Check if it's time to post (every 3 hours)
-            if time_since_last_post >= POST_INTERVAL:
-                logger.info(f"⏰ 3 hours elapsed - time to check for latest article!")
-                post_latest_article()
-                last_post_time = time.time()
-            else:
-                logger.debug(f"⏳ Next post in {time_until_next_post/60:.1f} minutes")
+            # Log keep-alive ping every 10 checks (every 5 minutes)
+            if check_count % 10 == 0:
+                next_post = get_next_post_time()
+                if POSTING_START_HOUR <= current_hour < POSTING_END_HOUR:
+                    logger.info(f"💚 Keep-alive #{check_count} - Next post: {next_post} | Today: {daily_post_count}/{POSTS_PER_DAY}")
+                else:
+                    logger.info(f"🌙 Keep-alive #{check_count} - Outside posting hours (Next: {next_post})")
+            
+            # Check if we're in posting hours
+            if current_hour >= POSTING_START_HOUR and current_hour < POSTING_END_HOUR:
+                # Check if current time matches a scheduled post time
+                for post_hour, post_minute in POSTING_TIMES:
+                    # Check if we're at the exact minute
+                    if current_hour == post_hour and current_minute == post_minute:
+                        # Prevent duplicate posts in the same minute
+                        check_key = f"{current_date}-{post_hour:02d}:{post_minute:02d}"
+                        if last_check_time != check_key:
+                            logger.info(f"⏰ SCHEDULED POST TIME: {post_hour:02d}:{post_minute:02d}")
+                            post_latest_article()
+                            last_check_time = check_key
+                            break
             
             # Wait before next keep-alive check
             time.sleep(KEEPALIVE_INTERVAL)
@@ -401,16 +516,24 @@ def home():
     """Health check endpoint"""
     logger.debug("🏠 Home endpoint accessed")
     uptime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    next_post = get_next_post_time()
+    
+    posting_schedule = "<br>".join([f"• {h:02d}:{m:02d}" for h, m in POSTING_TIMES])
+    
     return f"""
     <h1>✅ Telegram News Bot is Running</h1>
     <p>⏰ Current time: {uptime}</p>
     <p>📊 Articles posted: {len(posted_articles)}</p>
-    <p>⏱️ Posts every: 3 hours</p>
+    <p>📅 Today's posts: {daily_post_count}/{POSTS_PER_DAY}</p>
+    <p>⏰ Next post: {next_post}</p>
+    <hr>
+    <h3>📍 Daily Posting Schedule:</h3>
+    <p>{posting_schedule}</p>
+    <p><em>(Posts only between {POSTING_START_HOUR}:00 AM - {POSTING_END_HOUR}:00 PM)</em></p>
+    <hr>
     <p>🔗 <a href="/status">Detailed Status</a></p>
     <p>🔗 <a href="/ping">Ping Test</a></p>
     <p>🔗 <a href="/post_now">Post Latest Article Now</a></p>
-    <hr>
-    <p><em>Bot checks for latest article every 3 hours and posts if new...</em></p>
     """
 
 @app.route("/post_now", methods=["GET", "POST"])
@@ -430,10 +553,14 @@ def ping():
 def status():
     """Status information endpoint"""
     logger.debug("📊 Status endpoint accessed")
+    posting_times_str = [f"{h:02d}:{m:02d}" for h, m in POSTING_TIMES]
     return {
         "status": "running",
         "posted_articles_count": len(posted_articles),
-        "post_interval": "Every 3 hours",
+        "daily_posts": f"{daily_post_count}/{POSTS_PER_DAY}",
+        "posting_times": posting_times_str,
+        "posting_hours": f"{POSTING_START_HOUR}:00 - {POSTING_END_HOUR}:00",
+        "next_post": get_next_post_time(),
         "keepalive_interval_seconds": KEEPALIVE_INTERVAL,
         "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID),
         "groq_configured": bool(GROQ_API_KEY),
