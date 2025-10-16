@@ -9,7 +9,6 @@ import requests
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from flask import Flask
-import schedule
 
 # ------------------------------
 # 🔧 Configuration & Setup
@@ -28,6 +27,8 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
 }
 POSTED_FILE = "posted_articles.json"
+KEEPALIVE_INTERVAL = 30  # Ping every 30 seconds to keep bot alive
+POST_INTERVAL = 3 * 60 * 60  # Post every 3 hours (in seconds)
 CHANNEL_HANDLE = "@trending_gh"
 CHANNEL_LINK = f"👉 Join [{CHANNEL_HANDLE}](https://t.me/trending_gh)"
 
@@ -74,40 +75,38 @@ def save_posted_articles(articles_set):
 posted_articles = load_posted_articles()
 
 # ------------------------------
-# 🌐 Web Scraping
+# 🌐 Web Scraping - Get LATEST article
 # ------------------------------
-def scrape_articles():
-    """Scrape latest articles from MyJoyOnline with improved selectors"""
-    logger.info(f"🔍 Starting to scrape articles from {BASE_URL}")
+def get_latest_article():
+    """Get the very latest article from the website"""
+    logger.info(f"🔍 Fetching latest article from {BASE_URL}")
     
     try:
         response = requests.get(BASE_URL, headers=HEADERS, timeout=15)
         response.raise_for_status()
-        logger.info(f"✅ Successfully fetched page (Status: {response.status_code})")
+        logger.debug(f"✅ Successfully fetched page (Status: {response.status_code})")
     except requests.exceptions.RequestException as e:
         logger.error(f"❌ Failed to fetch page: {e}")
-        return []
+        return None
 
     soup = BeautifulSoup(response.text, "html.parser")
     
-    # Multiple selector strategies for better coverage
-    articles = []
-    
-    # Strategy 1: Top featured articles (larger cards)
+    # Multiple selector strategies - prioritize top/featured articles
+    # Strategy 1: Top featured articles (larger cards) - these are usually newest
     top_articles = soup.select("div.col-lg-6.col-md-6.col-sm-6.col-xs-12.mb-4")
-    logger.info(f"📊 Found {len(top_articles)} top featured articles")
     
     # Strategy 2: Grid articles (smaller cards)
     grid_articles = soup.select("div.col-lg-3.col-md-6.col-sm-6.col-xs-6.mb-4")
-    logger.info(f"📊 Found {len(grid_articles)} grid articles")
     
     # Strategy 3: Generic article containers (fallback)
     generic_articles = soup.select("div.item-details")
-    logger.info(f"📊 Found {len(generic_articles)} generic article containers")
     
+    # Prioritize top articles first (they're usually the latest)
     all_article_containers = top_articles + grid_articles + generic_articles
-    logger.info(f"📊 Total article containers found: {len(all_article_containers)}")
     
+    logger.info(f"📊 Found {len(all_article_containers)} total articles on page")
+    
+    # Try to get the first valid article
     for idx, article in enumerate(all_article_containers, 1):
         try:
             # Extract link and title
@@ -115,7 +114,6 @@ def scrape_articles():
             title_tag = article.select_one("h4, h3, h2, .entry-title")
             
             if not link_tag:
-                logger.debug(f"⚠️ Article {idx}: No link found, skipping")
                 continue
             
             link = link_tag.get("href", "").strip()
@@ -130,17 +128,14 @@ def scrape_articles():
             elif link_tag:
                 title = link_tag.get_text(strip=True)
             else:
-                logger.debug(f"⚠️ Article {idx}: No title found, skipping")
                 continue
             
             # Skip if no valid data
             if not title or not link or len(title) < 10:
-                logger.debug(f"⚠️ Article {idx}: Invalid title or link, skipping")
                 continue
             
             # Skip video content
             if "video" in link.lower() or "video" in title.lower():
-                logger.debug(f"⚠️ Article {idx}: Video content, skipping")
                 continue
             
             # Extract image
@@ -157,36 +152,33 @@ def scrape_articles():
                 if image_url and not image_url.startswith("http"):
                     image_url = "https://www.myjoyonline.com" + image_url
             
-            # Check if already posted
-            if link in posted_articles:
-                logger.debug(f"⏭️ Article {idx}: Already posted, skipping")
-                continue
+            logger.info(f"✅ Latest article found: {title[:60]}...")
+            logger.info(f"🔗 URL: {link}")
+            logger.info(f"📸 Image: {'Yes' if image_url else 'No'}")
             
-            articles.append({
+            return {
                 "title": title,
                 "url": link,
                 "image": image_url
-            })
-            
-            logger.info(f"✅ Article {idx}: '{title[:50]}...'")
+            }
             
         except Exception as e:
-            logger.error(f"❌ Error parsing article {idx}: {e}")
+            logger.debug(f"⚠️ Error parsing article {idx}: {e}")
             continue
     
-    logger.info(f"🎯 Successfully extracted {len(articles)} new articles")
-    return articles
+    logger.warning("⚠️ No valid articles found on page")
+    return None
 
 # ------------------------------
-# 🤖 AI Content Enhancement
+# 🤖 AI Enhancement - Rephrase + Summarize
 # ------------------------------
-def enhance_with_ai(title, url):
-    """Use Groq AI to create engaging summary"""
-    logger.info(f"🤖 Attempting to enhance article with AI: {title[:50]}...")
+def create_post_content(title, url):
+    """Create post with rephrased title and 2-sentence summary"""
+    logger.info(f"🤖 Creating AI-enhanced post for: {title[:50]}...")
     
     if not GROQ_API_KEY:
-        logger.warning("⚠️ No Groq API key found, skipping AI enhancement")
-        return None
+        logger.warning("⚠️ No Groq API key, using basic format")
+        return f"📰 *{title}*\n\n{CHANNEL_LINK}"
     
     try:
         # Fetch article content
@@ -196,53 +188,69 @@ def enhance_with_ai(title, url):
         
         # Extract article paragraphs
         paragraphs = []
-        for p in soup.select("article p, .entry-content p, .post-content p"):
+        for p in soup.select("article p, .entry-content p, .post-content p, .article-body p"):
             text = p.get_text(strip=True)
             if text and len(text) > 50:  # Filter out short/empty paragraphs
                 paragraphs.append(text)
         
         if not paragraphs:
-            logger.warning("⚠️ No content paragraphs found in article")
-            return None
+            logger.warning("⚠️ No content paragraphs found, using basic format")
+            return f"📰 *{title}*\n\n{CHANNEL_LINK}"
         
         # Limit content for AI processing
-        content = " ".join(paragraphs[:5])[:1500]  # First 5 paragraphs, max 1500 chars
+        content = " ".join(paragraphs[:6])[:2000]  # First 6 paragraphs, max 2000 chars
         
         logger.info(f"📝 Extracted {len(paragraphs)} paragraphs ({len(content)} chars)")
         
-        # Call Groq API
-        prompt = f"""Summarize this Ghana news article in 2-3 engaging sentences. 
-Be clear, informative, and professional. Ignore any promotional content or ads.
+        # Call Groq API with specific instructions
+        prompt = f"""You are a professional Ghanaian news editor. Create a Telegram post for this article.
 
-Title: {title}
-Content: {content}"""
+TITLE: {title}
+
+ARTICLE CONTENT:
+{content}
+
+REQUIREMENTS:
+1. First line: Rephrase the title to be engaging and clear (max 15 words)
+2. Next: Write EXACTLY 2 sentences summarizing the main points
+3. Be professional, clear, and informative
+4. Focus on the key facts
+5. Do not add emojis or extra commentary
+
+Format:
+[Rephrased Title]
+
+[Two sentence summary]"""
         
         groq_url = "https://api.groq.com/openai/v1/chat/completions"
         payload = {
             "model": "mixtral-8x7b-32768",
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.7,
-            "max_tokens": 200
+            "temperature": 0.6,
+            "max_tokens": 250
         }
-        headers = {
+        headers_api = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
         
-        res = requests.post(groq_url, headers=headers, json=payload, timeout=15)
+        res = requests.post(groq_url, headers=headers_api, json=payload, timeout=20)
         
         if res.status_code == 200:
             data = res.json()
-            summary = data["choices"][0]["message"]["content"].strip()
-            logger.info(f"✅ AI summary generated successfully ({len(summary)} chars)")
-            return summary
+            ai_content = data["choices"][0]["message"]["content"].strip()
+            logger.info(f"✅ AI content generated successfully")
+            
+            # Format the final message
+            message = f"📰 {ai_content}\n\n{CHANNEL_LINK}"
+            return message
         else:
             logger.error(f"❌ Groq API error ({res.status_code}): {res.text[:200]}")
-            return None
+            return f"📰 *{title}*\n\n{CHANNEL_LINK}"
             
     except Exception as e:
-        logger.error(f"❌ Error in AI enhancement: {e}")
-        return None
+        logger.error(f"❌ Error creating AI content: {e}")
+        return f"📰 *{title}*\n\n{CHANNEL_LINK}"
 
 # ------------------------------
 # 📢 Telegram Posting
@@ -264,7 +272,7 @@ def send_to_telegram(content, image_url=None):
                 "photo": image_url,
                 "parse_mode": "Markdown"
             }
-            response = requests.post(f"{base_url}/sendPhoto", data=payload, timeout=10)
+            response = requests.post(f"{base_url}/sendPhoto", data=payload, timeout=15)
         else:
             logger.info(f"📝 Sending text message to Telegram")
             payload = {
@@ -273,13 +281,13 @@ def send_to_telegram(content, image_url=None):
                 "parse_mode": "Markdown",
                 "disable_web_page_preview": False
             }
-            response = requests.post(f"{base_url}/sendMessage", json=payload, timeout=10)
+            response = requests.post(f"{base_url}/sendMessage", json=payload, timeout=15)
         
         if response.status_code == 200:
             logger.info("✅ Successfully sent message to Telegram")
             return True
         else:
-            logger.error(f"❌ Telegram API error ({response.status_code}): {response.text[:200]}")
+            logger.error(f"❌ Telegram API error ({response.status_code}): {response.text[:300]}")
             return False
             
     except Exception as e:
@@ -287,136 +295,146 @@ def send_to_telegram(content, image_url=None):
         return False
 
 # ------------------------------
-# 🎯 Main Job Function
+# 🔄 Main Job - Post Latest Article Every 3 Hours
 # ------------------------------
-def job():
-    """Main scraping and posting job"""
+def post_latest_article():
+    """Check and post latest article if it's new"""
     logger.info("=" * 60)
-    logger.info("🚀 STARTING NEWS SCRAPING JOB")
+    logger.info("🚀 CHECKING FOR LATEST ARTICLE TO POST")
     logger.info("=" * 60)
     logger.info(f"⏰ Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"📊 Already posted: {len(posted_articles)} articles")
     
-    # Scrape articles
-    articles = scrape_articles()
+    # Get the latest article from website
+    latest_article = get_latest_article()
     
-    if not articles:
-        logger.warning("⚠️ No new articles found")
+    if not latest_article:
+        logger.warning("⚠️ No article found on website")
+        logger.info("=" * 60)
         return
     
-    logger.info(f"📰 Processing {len(articles)} new articles...")
+    # Check if already posted
+    if latest_article['url'] in posted_articles:
+        logger.info(f"⏭️ Latest article already posted: {latest_article['title'][:60]}...")
+        logger.info("=" * 60)
+        return
     
-    posted_count = 0
+    logger.info(f"🆕 NEW ARTICLE TO POST!")
+    logger.info(f"📰 Title: {latest_article['title'][:80]}...")
+    logger.info(f"🔗 URL: {latest_article['url']}")
+    logger.info(f"📸 Image: {'Yes ✅' if latest_article['image'] else 'No ❌'}")
     
-    for idx, article in enumerate(articles, 1):
-        try:
-            logger.info(f"\n--- Processing Article {idx}/{len(articles)} ---")
-            logger.info(f"Title: {article['title'][:60]}...")
-            logger.info(f"URL: {article['url']}")
-            logger.info(f"Image: {'Yes' if article['image'] else 'No'}")
+    try:
+        # Create enhanced content
+        message = create_post_content(latest_article['title'], latest_article['url'])
+        
+        # Send to Telegram
+        success = send_to_telegram(message, latest_article['image'])
+        
+        if success:
+            posted_articles.add(latest_article['url'])
+            save_posted_articles(posted_articles)
+            logger.info(f"✅ Article posted successfully!")
+            logger.info(f"📊 Total articles posted: {len(posted_articles)}")
+        else:
+            logger.error(f"❌ Failed to post article")
             
-            # Try AI enhancement first
-            ai_summary = enhance_with_ai(article['title'], article['url'])
-            
-            if ai_summary:
-                message = f"📰 *{article['title']}*\n\n{ai_summary}\n\n[Read full article]({article['url']})\n\n{CHANNEL_LINK}"
-            else:
-                # Fallback to simple format
-                message = f"📰 *{article['title']}*\n\n[Read full article]({article['url']})\n\n{CHANNEL_LINK}"
-            
-            # Send to Telegram
-            success = send_to_telegram(message, article['image'])
-            
-            if success:
-                posted_articles.add(article['url'])
-                posted_count += 1
-                logger.info(f"✅ Article {idx} posted successfully")
-                
-                # Save after each successful post
-                save_posted_articles(posted_articles)
-                
-                # Rate limiting - wait between posts
-                if idx < len(articles):
-                    wait_time = 5  # 5 seconds between posts
-                    logger.info(f"⏸️ Waiting {wait_time} seconds before next post...")
-                    time.sleep(wait_time)
-            else:
-                logger.error(f"❌ Failed to post article {idx}")
-                
-        except Exception as e:
-            logger.error(f"❌ Error processing article {idx}: {e}")
-            continue
+    except Exception as e:
+        logger.error(f"❌ Error posting article: {e}")
     
-    logger.info("=" * 60)
-    logger.info(f"✅ JOB COMPLETED: Posted {posted_count}/{len(articles)} articles")
-    logger.info(f"📊 Total articles in database: {len(posted_articles)}")
     logger.info("=" * 60)
 
 # ------------------------------
-# ⏱️ Scheduler
+# ⏱️ Keep Alive & Scheduler
 # ------------------------------
-def run_scheduler():
-    """Run scheduled jobs in background"""
-    logger.info("⏰ Scheduler initialized")
-    
-    # Schedule job every 3 hours
-    schedule.every(3).hours.do(job)
-    
-    logger.info("📅 Job scheduled to run every 3 hours")
-    logger.info("🔄 Running initial job...")
+def run_keepalive_and_scheduler():
+    """Keep bot alive and run scheduled posts"""
+    logger.info("=" * 60)
+    logger.info("🚀 SCHEDULER STARTED")
+    logger.info("=" * 60)
+    logger.info(f"⏱️ Keep-alive ping: Every {KEEPALIVE_INTERVAL} seconds")
+    logger.info(f"📅 Post schedule: Every 3 hours")
+    logger.info(f"📊 Already posted: {len(posted_articles)} articles")
     
     # Run immediately on startup
+    logger.info("🔄 Running initial check...")
     try:
-        job()
+        post_latest_article()
     except Exception as e:
-        logger.error(f"❌ Error in initial job run: {e}")
+        logger.error(f"❌ Error in initial run: {e}")
     
-    logger.info("♾️ Entering scheduler loop...")
+    last_post_time = time.time()
+    check_count = 0
     
     while True:
         try:
-            schedule.run_pending()
-            time.sleep(60)  # Check every minute
+            check_count += 1
+            current_time = time.time()
+            time_since_last_post = current_time - last_post_time
+            time_until_next_post = POST_INTERVAL - time_since_last_post
+            
+            # Log keep-alive ping
+            if check_count % 10 == 0:  # Log every 10th check (every 5 minutes)
+                hours_since_last = time_since_last_post / 3600
+                logger.info(f"💚 Keep-alive #{check_count} - {hours_since_last:.2f} hours since last post")
+            
+            # Check if it's time to post (every 3 hours)
+            if time_since_last_post >= POST_INTERVAL:
+                logger.info(f"⏰ 3 hours elapsed - time to check for latest article!")
+                post_latest_article()
+                last_post_time = time.time()
+            else:
+                logger.debug(f"⏳ Next post in {time_until_next_post/60:.1f} minutes")
+            
+            # Wait before next keep-alive check
+            time.sleep(KEEPALIVE_INTERVAL)
+            
         except Exception as e:
             logger.error(f"❌ Error in scheduler loop: {e}")
-            time.sleep(60)
+            time.sleep(KEEPALIVE_INTERVAL)
 
 # ------------------------------
-# 🌐 Flask Routes
+# 🌐 Flask Routes (Keep bot alive)
 # ------------------------------
 @app.route("/")
 def home():
     """Health check endpoint"""
-    logger.info("🏠 Home endpoint accessed")
+    logger.debug("🏠 Home endpoint accessed")
     uptime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     return f"""
     <h1>✅ Telegram News Bot is Running</h1>
     <p>⏰ Current time: {uptime}</p>
-    <p>📊 Articles tracked: {len(posted_articles)}</p>
-    <p>🔗 <a href="/run_now">Trigger manual scrape</a></p>
-    <p>🔗 <a href="/ping">Ping test</a></p>
-    <p>🔗 <a href="/status">Status check</a></p>
+    <p>📊 Articles posted: {len(posted_articles)}</p>
+    <p>⏱️ Posts every: 3 hours</p>
+    <p>🔗 <a href="/status">Detailed Status</a></p>
+    <p>🔗 <a href="/ping">Ping Test</a></p>
+    <p>🔗 <a href="/post_now">Post Latest Article Now</a></p>
+    <hr>
+    <p><em>Bot checks for latest article every 3 hours and posts if new...</em></p>
     """
 
-@app.route("/run_now", methods=["GET", "POST"])
-def run_now():
-    """Manual trigger endpoint"""
-    logger.info("🎯 Manual scrape triggered via /run_now")
-    Thread(target=job, daemon=True).start()
-    return "✅ Manual scrape triggered! Check logs for progress."
+@app.route("/post_now", methods=["GET", "POST"])
+def post_now():
+    """Manual trigger to post latest article"""
+    logger.info("🎯 Manual post triggered via /post_now")
+    Thread(target=post_latest_article, daemon=True).start()
+    return "✅ Checking for latest article now! Check logs for progress."
 
 @app.route("/ping")
 def ping():
     """Simple ping endpoint"""
-    logger.info("🏓 Ping endpoint accessed")
+    logger.debug("🏓 Ping endpoint accessed")
     return "pong"
 
 @app.route("/status")
 def status():
     """Status information endpoint"""
-    logger.info("📊 Status endpoint accessed")
+    logger.debug("📊 Status endpoint accessed")
     return {
         "status": "running",
         "posted_articles_count": len(posted_articles),
+        "post_interval": "Every 3 hours",
+        "keepalive_interval_seconds": KEEPALIVE_INTERVAL,
         "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHANNEL_ID),
         "groq_configured": bool(GROQ_API_KEY),
         "timestamp": datetime.now().isoformat()
@@ -447,11 +465,12 @@ if __name__ == "__main__":
         logger.info("✅ Groq API key configured")
     
     # Start scheduler in background thread
-    scheduler_thread = Thread(target=run_scheduler, daemon=True)
+    scheduler_thread = Thread(target=run_keepalive_and_scheduler, daemon=True)
     scheduler_thread.start()
     logger.info("✅ Scheduler thread started")
     
-    # Start Flask app
+    # Start Flask app (keeps service alive on Render)
     port = int(os.environ.get("PORT", 5000))
     logger.info(f"🌐 Starting Flask app on port {port}")
+    logger.info("=" * 60)
     app.run(host="0.0.0.0", port=port, debug=False)
